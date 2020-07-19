@@ -1,0 +1,783 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <title>reveal.js</title>
+
+  <link rel="stylesheet" href="dist/reset.css">
+  <link rel="stylesheet" href="dist/reveal.css">
+  <link rel="stylesheet" href="dist/theme/black.css" id="theme">
+
+  <!-- Theme used for syntax highlighted code -->
+  <link rel="stylesheet" href="plugin/highlight/monokai.css" id="highlight-theme">
+</head>
+
+<body>
+  <div class="reveal">
+    <style>
+      .reveal section pre code {
+        font-size: 0.8em !important;
+        line-height: normal !important;
+      }
+      .container {
+        display: flex;
+      }
+      .col {
+        flex: 1;
+      }
+    </style>
+    <div class="slides">
+      <section>
+        <h1>CxxWrap.jl</h1>
+        <p>Julia and C++: a technical overview of CxxWrap.jl</p>
+      </section>
+      <section>
+        <h2>What is CxxWrap?</h2>
+        <ul>
+          <li class="fragment">Package for using C++ libraries in Julia</li>
+          <li class="fragment">Library-based approach</li>
+          <ul>
+            <li class="fragment">Compile a C++ "wrapper" library</li>
+            <li class="fragment">Distribute using BinaryBuilder / Yggdrasil</li>
+            <li class="fragment">Inspired by <a href="https://www.boost.org/doc/libs/1_73_0/libs/python/doc/html/index.html">Boost.Python</a> and <a href="https://github.com/pybind/pybind11">pybind11</a></li>
+            <li class="fragment">Non-interactive, use <a href="https://github.com/JuliaInterop/Cxx.jl">Cxx.jl</a> for that</li>
+          </ul>
+          <li class="fragment">Some tools for using Julia in C++</li>
+          <li class="fragment">Wrappers for standard library containers</li>
+        </ul>
+      </section>
+      <section>
+        <section><h2>Demo</h2></section>
+        <section>
+          <p>C++ Code exposing class <code>Foo</code></p>
+          <pre><code class="c++" data-trim data-line-numbers="3-10|1,12|14|14-15|14-16">
+            #include &lt;jlcxx/jlcxx.hpp&gt;
+
+            class Foo
+            {
+            public:
+              Foo(int i = 0) : m_value(i) {} // Constructor
+              int add(int i) const { return m_value + i; } // Member function
+            private:
+              int m_value; // Private data
+            };
+            
+            JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
+            {
+              mod.add_type&lt;Foo&gt;("Foo")
+                .constructor&lt;int&gt;()
+                .method("add", &Foo::add);
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p>Usage from Julia</p>
+          <pre><code class="julia" data-trim data-line-numbers="|4|6-8|10">
+            module LibFoo
+              using CxxWrap
+            
+              @wrapmodule "libfoo/build/lib/libfoo"
+            
+              function __init__()
+                @initcxx
+              end
+            
+              export Foo, add
+            end
+          </code></pre>
+          <pre class="fragment"><code class="julia-repl" data-trim data-line-numbers="1|2|4-5">
+            julia> using .LibFoo
+            julia> f = Foo(3)
+            Main.LibFoo.FooAllocated(Ptr{Nothing} @0x00000000021c9860)
+            julia> add(f,1)
+            4 
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h2>Calling C++ functions</h2>
+        </section>
+        <section>
+          <p>A quick <code>ccall</code> reminder</p>
+          <pre><code class="c" data-trim>
+            int foo(int a, int b) { return a + b; }
+          </code></pre>
+          <span class="fragment">
+            <p><small>Compile using e.g:</small></p>
+            <pre><code class="bash" data-trim>
+              clang -shared -o libfoo.dylib foo.c
+            </code></pre>
+          </span>
+          <span class="fragment">
+            <p><small>Use in Julia:</small></p>
+            <pre><code class="julia-repl" data-trim>
+              julia> ccall((:foo, "libfoo"), Cint, (Cint,Cint), 1, 2)
+              3
+            </code></pre>
+          </span>
+        </section>
+        <section>
+          <p>That was easy! Let's try C++!</p>
+          <pre><code class="c" data-trim>
+            int foo(int a, int b) { return a + b; }
+          </code></pre>
+          <span class="fragment">
+            <p><small>Compile using e.g:</small></p>
+            <pre><code class="bash" data-trim>
+              clang++ -shared -o libfoocpp.dylib foo.cpp
+            </code></pre>
+          </span>
+          <span class="fragment">
+            <p><small>Use in Julia:</small></p>
+            <pre><code class="julia-repl" data-trim>
+              julia> ccall((:foo, "libfoocpp"), Cint, (Cint,Cint), 1, 2)
+              ERROR: could not load symbol "foo":
+              dlsym(0x7fa0c8c4eef0, foo): symbol not found
+              Stacktrace:
+                [1] top-level scope at ./REPL[1]:1
+            </code></pre>
+          </span>
+        </section>
+        <section>
+          <p>C++ name mangling</p>
+          <pre><code class="bash" data-trim data-line-numbers="1-2|3-4">
+            nm -gU libfoo.dylib    
+            0000000000000fa0 T _foo
+            nm -gU libfoocpp.dylib 
+            0000000000000fa0 T __Z3fooii
+          </code></pre>
+          <pre class="fragment"><code class="julia-repl" data-trim>
+            julia> ccall((:_Z3fooii, "libfoocpp"), Cint, (Cint,Cint), 1, 2)
+            3
+          </code></pre>
+          <p class="fragment"><small>(Un)fortunately this is not portable</small></p>
+        </section>
+        <section>
+          <p>Alternative <code>ccall</code> sequence</p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1|2-3|4-5">
+            julia> using Libdl
+            julia> fooptr = dlsym(dlopen("libfoo"), :foo)
+            Ptr{Nothing} @0x000000010f5d3fa0
+            julia> ccall(fooptr, Cint, (Cint,Cint), 1, 2)
+            3
+          </code></pre>
+        </section>
+        <section>
+          <p>Exploiting this to call c++ functions</p>
+          <pre><code class="c++" data-trim data-line-numbers="4-5|7-12">
+            #include &lt;vector&gt;
+            int foo(int a, int b) { return a + b; }
+            
+            // Filled using registration functions
+            std::vector&lt;void*&gt; registered_functions = {reinterpret_cast&lt;void*&gt;(foo)};
+            
+            extern "C" {
+              void* getfunction(int function_idx)
+              {
+                return registered_functions[function_idx];
+              }
+            }              
+          </code></pre>
+          <pre class="fragment"><code class="julia-repl" data-trim data-line-numbers="1-2|3-4">
+            julia> fooptr = ccall((:getfunction, "libfoocpp"), Ptr{Cvoid}, (Cint,), 0)
+            Ptr{Nothing} @0x0000000126f79cc0
+            julia> ccall(fooptr, Cint, (Cint,Cint), 1, 2)
+            3
+          </code></pre>
+        </section>
+        <section>
+          <p>Additional complications</p>
+          <ul>
+            <li class="fragment">Type conversions</li>
+            <li class="fragment">Member functions</li>
+            <li class="fragment">Lambdas</li>
+            <li class="fragment">Exceptions</li>
+          </ul>
+        </section>
+        <section>
+          <p>Solution: use <code>std::function</code></p>
+          <pre><code class="c++" data-trim data-line-numbers="3-7|11-14|16-17">
+            #include &lt;functional&gt;
+            
+            class Foo
+            {
+              public:
+                int foo(int a, int b) { return a+b; }
+            };
+            
+            int main()
+            {
+              std::function&lt;int(Foo&, int, int)&gt; f([] (Foo& foo, int a, int b)
+              {
+                return foo.foo(a,b);
+              });
+            
+              Foo myfoo;
+              int result = f(myfoo, 1, 2);
+            
+              return 0;
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p>Solution: use <code>std::function</code></p>
+          <pre><code class="c++" data-trim data-line-numbers="5-6|10-11|12|16">
+            template&lt;typename R, typename... Args&gt;
+            struct CallFunctor
+            {
+              // ... skipping horrible stuff to compute return_type
+              static return_type apply(const void* function,
+                                       static_julia_type&lt;Args&gt;... args)
+              {
+                try
+                {
+                  auto std_func =
+                    reinterpret_cast&lt;const std::function&lt;R(Args...)&gt;*&gt;(function);
+                  return convert_to_julia((*std_func)(convert_to_cpp&lt;Args&gt;(args)...));
+                }
+                catch(const std::exception& err)
+                {
+                  jl_error(err.what());
+                }
+              }
+            };
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h2>Type mapping</h2>
+        </section>
+        <section>
+          <p>Fundamental types</p>
+          <ul>
+            <li>Can map directly to Julia equivalents, e.g:</li>
+            <ul>
+              <li><code>double</code> ↔ <code>Float64</code></li>
+              <li><code>void*</code> ↔ <code>Ptr{Cvoid}</code></li>
+            </ul>
+            <li>Goes for integers as well, but...</li>
+          </ul>
+        </section>
+        <section>
+          <p>Integers in C++</p>
+          <img height="500em" src="media/ints.png">
+        </section>
+        <section>
+          <p>Fixed-size integers in C++</p>
+          <img height="500em" src="media/intsfixed.png">
+        </section>
+        <section>
+          <p>Choices had to be made 😰</p>
+          <div class="container">
+            <div class="col">
+              <p>Mac</p>
+              <pre><code class="text" data-trim data-line-numbers="|4-5|6,7,10,11">
+                char               -> CxxChar
+                int                -> Int32
+                unsigned int       -> UInt32
+                long               -> CxxLong
+                unsigned long      -> CxxULong
+                long long          -> Int64
+                unsigned long long -> UInt64
+                int32_t            -> Int32
+                uint32_t           -> UInt32
+                int64_t            -> Int64
+                uint64_t           -> UInt64
+              </code></pre>
+            </div>
+            <div class="col">
+              <p>Linux 64 bit</p>
+              <pre><code class="text" data-trim data-line-numbers="|6-7|4,5,10,11">
+                char               -> CxxChar
+                int                -> Int32
+                unsigned int       -> UInt32
+                long               -> Int64
+                unsigned long      -> UInt64
+                long long          -> CxxLongLong
+                unsigned long long -> CxxULongLong
+                int32_t            -> Int32
+                uint32_t           -> UInt32
+                int64_t            -> Int64
+                uint64_t           -> UInt64
+              </code></pre>
+            </div>
+        </div>
+        </section>
+        <section>
+          <img src="https://media.giphy.com/media/3og0INyCmHlNylks9O/giphy.gif">
+        </section>
+        <section>
+          <p>Other types</p>
+          <p><small>C structs map directly, e.g:</small></p>
+          <div class="container">
+            <div class="col">
+              <p>C and C++</p>
+              <pre><code class="c++" data-trim>
+                struct Foo {
+                  void* p;
+                };
+              </code></pre>
+            </div>
+            <div class="col">
+              <p>Julia</p>
+              <pre><code class="julia" data-trim>
+                struct Foo
+                  p::Ptr{Cvoid}
+                end
+              </code></pre>
+            </div>
+        </div>
+        <p class="fragment"><small>The pointer can be any C++ object, so we use this a lot!</small></p>
+        </section>
+      </section>
+      <section>
+        <section><h1>Adding types</h1></section>
+        <section>
+          <p>Type creation mechanism</p>
+          <ul>
+            <li>The call <code>add_type</code> really creates three types
+            <pre><code class="c++" data-trim>
+              mod.add_type&lt;Foo&gt;("Foo");
+            </code></pre>
+            <ul>
+              <li class="fragment">Base type:
+                <pre><code class="julia" data-trim>
+                  abstract type Foo end
+                </code></pre>
+              </li>
+              <li class="fragment">Allocated type:
+                <pre><code class="julia" data-trim>
+                  mutable struct FooAllocated <: Foo
+                    cpp_object::Ptr{Cvoid}
+                  end
+                </code></pre>
+              </li>
+              <li class="fragment">Dereferenced type:
+                <pre><code class="julia" data-trim>
+                  struct FooDereferenced <: Foo
+                    cpp_object::Ptr{Cvoid}
+                  end
+                </code></pre>
+              </li>
+            </ul>
+            </li>
+          </ul>
+        </section>
+        <section>
+          <p>References and pointers</p>
+          <p><small>We need distinct types for <code>T*, const T*, T&, const T&</code></small></p>
+          <pre><code class="julia" data-trim data-line-numbers="1|3-17">
+            abstract type CxxBaseRef{T} <: Ref{T} end
+
+            struct CxxPtr{T} <: CxxBaseRef{T}
+              cpp_object::Ptr{T}
+            end
+            
+            struct ConstCxxPtr{T} <: CxxBaseRef{T}
+              cpp_object::Ptr{T}
+            end
+            
+            struct CxxRef{T} <: CxxBaseRef{T}
+              cpp_object::Ptr{T}
+            end
+            
+            struct ConstCxxRef{T} <: CxxBaseRef{T}
+              cpp_object::Ptr{T}
+            end
+          </code></pre>
+        </section>
+        <section>
+          <p>Example</p>
+          <pre><code class="c++" data-trim data-line-numbers="6-9">
+            class Foo
+            {
+            public:
+              Foo(int i = 0) : m_value(i) {}
+              int add(int i) const { return m_value + i; } // Member function
+              Foo* thisptr() { return this; }
+              Foo& thisref() { return *this; }
+              Foo thiscopy() { return *this; }
+              const int* valueptr() { return &m_value; }
+            private:
+              int m_value;
+            };
+          </code></pre>
+        </section>
+        <section>
+          <p>Example</p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1-2|4-5|7-8|10-11|13-14|16-17|19-20|22-23|25-26">
+            julia> f = Foo(2)
+            Main.LibFoo.FooAllocated(Ptr{Nothing} @0x0000563768a76130)
+
+            julia> thiscopy(f)
+            Main.LibFoo.FooAllocated(Ptr{Nothing} @0x0000563768149440)
+
+            julia> thisref(f)
+            CxxWrap.CxxWrapCore.CxxRef{Foo}(Ptr{Foo} @0x0000563768a76130)
+
+            julia> thisptr(f)
+            CxxWrap.CxxWrapCore.CxxPtr{Foo}(Ptr{Foo} @0x0000563768a76130)
+
+            julia> thisref(f)[]
+            Main.LibFoo.FooDereferenced(Ptr{Nothing} @0x0000563768a76130)
+
+            julia> thisptr(f)[]
+            Main.LibFoo.FooDereferenced(Ptr{Nothing} @0x0000563768a76130)
+
+            julia> add(thisref(f), 2)
+            4
+
+            julia> valueptr(f)
+            CxxWrap.CxxWrapCore.ConstCxxPtr{Int32}(Ptr{Int32} @0x0000563768a76130)
+            
+            julia> valueptr(f)[]
+            2
+          </code></pre>
+        </section>
+        <section>
+          <p>Caveat: object lifetime</p>
+          <p><small>This is fine, right?</small></p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1-6|8-9">
+            julia> function usefoo()
+                     f = Foo(2)
+                     valptr = valueptr(f)
+                     return valptr[]
+                   end
+            usefoo (generic function with 1 method)
+
+            julia> usefoo()
+            2
+          </code></pre>
+        </section>
+        <section>
+          <p>Caveat: object lifetime</p>
+          <p><small>Not quite...</small></p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1-10|12-13">
+            julia> function usefoo()
+                    f = Foo(2)
+                    valptr = valueptr(f)
+                    for i in 1:100
+                      f2 = Foo(rand(100:200))
+                    end
+                    GC.gc()
+                    return valptr[]
+                  end
+            usefoo (generic function with 1 method)
+
+            julia> usefoo()
+            -1899136832
+          </code></pre>
+        </section>
+        <section>
+          <p>Caveat: object lifetime</p>
+          <p><small>Use <code>GC.@preserve</code></small></p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="4|8-9">
+            julia> function usefoo()
+                    f = Foo(2)
+                    valptr = valueptr(f)
+                    GC.@preserve f return valptr[]
+                  end
+            usefoo (generic function with 1 method)
+
+            julia> usefoo()
+            2
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section><h2>Adding Julia methods to C++ types</h2></section>
+        <section>
+          <p>We can add methods in the normal way:</p>
+          <pre><code class="julia" data-trim data-line-numbers="10-12">
+            module LibFoo
+            using CxxWrap
+          
+            @wrapmodule "libfoo/build/lib/libfoo"
+          
+            function __init__()
+              @initcxx
+            end
+          
+            function extendedadd(a::Foo, b::Foo)
+              return valueptr(a)[] + valueptr(b)[]
+            end
+          
+            export Foo, add, thisptr, thisref, thiscopy, valueptr
+          end
+          </code></pre>
+          <pre class="fragment"><code class="julia-repl" data-trim data-line-numbers="10-12">
+            julia> a = Foo(1)
+            julia> b = Foo(2)
+            julia> extendedadd(a,b)
+            3
+          </code></pre>
+        </section>
+        <section>
+          <p>Problem with references:</p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1|2-3">
+            julia> extendedadd(thisref(a), b)
+            ERROR: MethodError: no method matching
+              extendedadd(::CxxWrap.CxxWrapCore.CxxRef{Foo}, ::Main.LibFoo.FooAllocated)
+            Closest candidates are:
+              extendedadd(::Foo, ::Foo) at /Users/bjanssens/CloudStation/projects/julia/juliacon/2020/cxxwrap-talk/examples/Foo.jl:11
+            Stacktrace:
+            [1] top-level scope at REPL[7]:1
+          </code></pre>
+        </section>
+        <section>
+          <p>Problem with references and pointers</p>
+          <ul>
+            <li>Add methods?
+              <pre><code class="julia fragment" data-trim>extendedadd(a::CxxRef{Foo}, b::Foo)</code></pre>
+              <pre><code class="julia fragment" data-trim>extendedadd(a::Foo, b::CxxRef{Foo})</code></pre>
+              <pre><code class="julia fragment" data-trim>extendedadd(a::CxxRef{Foo}, b::::CxxRef{Foo})</code></pre>
+            </li>
+            <li class="fragment">😭</li>
+          </ul>
+        </section>
+        <section>
+          <p>Secret wish 🙏</p>
+          <pre><code class="julia">abstract type AbstractCxxRef{T} <: T end</code></pre>
+        </section>
+        <section>
+          <p>The <code>@cxxdereference</code> macro</p>
+          <pre><code class="julia" data-trim data-line-numbers="10-12">
+            module LibFoo
+              using CxxWrap
+            
+              @wrapmodule "libfoo/build/lib/libfoo"
+            
+              function __init__()
+                @initcxx
+              end
+            
+              @cxxdereference function extendedadd(a::Foo, b::Foo)
+                return valueptr(a)[] + valueptr(b)[]
+              end
+            
+              export Foo, add, thisptr, thisref, thiscopy, valueptr, extendedadd
+            end
+          </code></pre>
+        </section>
+        <section>
+          <p>The <code>@cxxdereference</code> macro</p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1-2|3-10|14-15|17|14-15">
+            julia> extendedadd(thisref(a),b)
+            3
+            julia> methods(extendedadd)
+            # 1 method for generic function "extendedadd":
+            [1] extendedadd(a::Union{CxxWrap.CxxWrapCore.CxxBaseRef{Foo},
+                                    CxxWrap.CxxWrapCore.SmartPointer{Foo},
+                                    Foo},
+                            b::Union{CxxWrap.CxxWrapCore.CxxBaseRef{Foo},
+                                    CxxWrap.CxxWrapCore.SmartPointer{Foo},
+                                    Foo}) in Main.LibFoo
+            julia> @macroexpand   @cxxdereference function extendedadd(a::Foo, b::Foo) return valueptr(a)[] + valueptr(b)[] end
+            :(function extendedadd(a::(CxxWrap.CxxWrapCore).reference_type_union(Foo), b::(CxxWrap.CxxWrapCore).reference_type_union(Foo); )
+                #= /home/bjanssens/.julia/packages/CxxWrap/ZOkSN/src/CxxWrap.jl:787 =#
+                a = (CxxWrap.CxxWrapCore).dereference_argument(a)
+                b = (CxxWrap.CxxWrapCore).dereference_argument(b)
+                #= REPL[9]:2 =#
+                return (valueptr(a))[] + (valueptr(b))[]
+            end)
+          </code></pre>
+          <pre class="fragment"><code class="julia" data-trim>
+            dereference_argument(x) = x
+            dereference_argument(x::CxxBaseRef) = x[]
+            dereference_argument(x::SmartPointer) = x[]
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section><h2>C++ Standard Library</h2></section>
+        <section>
+          <p>Standard library support</p>
+          <ul>
+            <li>Support for:
+              <ul>
+                <li class="fragment">Strings</li>
+                <li class="fragment"><code>std::vector</code></li>
+                <li class="fragment">Smart pointers</li>
+              </ul>
+            </li>
+            <li class="fragment">Wrapped using CxxWrap itself</li>
+            <li class="fragment">Work-in-progress, relatively easy to extend</li>
+          </ul>
+        </section>
+        <section>
+          <p>Usage example</p>
+          <pre><code class="c++" data-trim data-line-numbers="2|8-16">
+            #include &lt;jlcxx/jlcxx.hpp&gt;
+            #include &lt;jlcxx/stl.hpp&gt;
+            // ...
+            JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
+            {
+              mod.add_type&lt;Foo&gt;("Foo")
+                //...
+              mod.method("sumfoos", [] (const std::vector&lt;Foo&gt;& vec)
+              {
+                int result = 0;
+                for (auto foo : vec)
+                {
+                  result += *foo.valueptr();
+                }
+                return result;
+              });
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p>Usage example</p>
+          <pre><code class="julia-repl" data-trim data-line-numbers="1|3-4|6-7">
+            julia> foo_vec = StdVector(Foo.(1:10000));
+
+            julia> foo_vec[1]
+            Main.LibFoo.FooDereferenced(Ptr{Nothing} @0x000000000198d250)
+
+            julia> sumfoos(foo_vec)
+            50005000
+          </code></pre>
+        </section>
+        <section>
+          <p>Implementation</p>
+          <p><small>Module definition:</small></p>
+          <pre><code class="c++" data-trim data-line-numbers="1,2,11|3-4|6-8|10">
+            JLCXX_MODULE define_cxxwrap_stl_module(jlcxx::Module& stl)
+            {
+              jlcxx::stl::wrap_string(stl.add_type&lt;std::string&gt;("StdString", julia_type("CppBasicString")));
+              jlcxx::stl::wrap_string(stl.add_type&lt;std::wstring&gt;("StdWString", julia_type("CppBasicString")));
+            
+              jlcxx::add_smart_pointer&lt;std::shared_ptr&gt;(stl, "SharedPtr");
+              jlcxx::add_smart_pointer&lt;std::weak_ptr&gt;(stl, "WeakPtr");
+              jlcxx::add_smart_pointer&lt;std::unique_ptr&gt;(stl, "UniquePtr");
+            
+              jlcxx::stl::StlWrappers::instantiate(stl);
+            }
+          </code></pre>
+          <p class="fragment"><small>C++ files <a href="https://github.com/JuliaInterop/libcxxwrap-julia/blob/master/include/jlcxx/stl.hpp"><code>stl.hpp</code></a> and <a href="https://github.com/JuliaInterop/libcxxwrap-julia/blob/master/src/stl.cpp"><code>stl.cpp</code></a></small></p>
+        </section>
+        <section>
+          <p><small>Module definition continued:</small></p>
+          <pre><code class="c++" data-trim data-line-numbers="3-7">
+            JLCXX_API void StlWrappers::instantiate(Module& mod)
+            {
+              m_instance.reset(new StlWrappers(mod));
+              m_instance-&gt;vector.apply_combination&lt;std::vector, stltypes&gt;(
+                stl::WrapVector());
+              m_instance-&gt;valarray.apply_combination&lt;std::valarray, stltypes&gt;(
+                stl::WrapValArray());
+              smartptr::apply_smart_combination&lt;std::shared_ptr, stltypes&gt;(mod);
+              smartptr::apply_smart_combination&lt;std::weak_ptr, stltypes&gt;(mod);
+              smartptr::apply_smart_combination&lt;std::unique_ptr, stltypes&gt;(mod);
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p><small>Module definition continued:</small></p>
+          <pre><code class="c++" data-trim data-line-numbers="3-6">
+            JLCXX_API StlWrappers::StlWrappers(Module& stl) :
+              m_stl_mod(stl),
+              vector(stl.add_type&lt;Parametric&lt;TypeVar&lt;1&gt;&gt;&gt;(
+                "StdVector", julia_type("AbstractVector"))),
+              valarray(stl.add_type&lt;Parametric&lt;TypeVar&lt;1&gt;&gt;&gt;(
+                "StdValArray", julia_type("AbstractVector")))
+            {
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p><small>Module definition continued:</small></p>
+          <pre><code class="c++" data-trim data-line-numbers="8-9|10-21">
+            struct WrapVector
+            {
+              template&lt;typename TypeWrapperT&gt;
+              void operator()(TypeWrapperT&& wrapped)
+              {
+                using WrappedT = typename TypeWrapperT::type;
+                using T = typename WrappedT::value_type;
+                wrapped.module().set_override_module(StlWrappers::instance().module());
+                wrapped.method("cppsize", &WrappedT::size);
+                wrapped.method("resize", [] (WrappedT& v, const cxxint_t s) {
+                  v.resize(s);
+                });
+                wrapped.method("append", [] (WrappedT& v, jlcxx::ArrayRef&lt;T&gt; arr)
+                {
+                  const std::size_t addedlen = arr.size();
+                  v.reserve(v.size() + addedlen);
+                  for(size_t i = 0; i != addedlen; ++i)
+                  {
+                    v.push_back(arr[i]);
+                  }
+                });
+                wrapped.module().unset_override_module();
+              }
+            };
+          </code></pre>
+        </section>
+        <section>
+          <p><small>Hook to add a type on the fly:</small></p>
+          <pre><code class="c++" data-trim data-line-numbers>
+            template&lt;typename T&gt;
+            inline void apply_stl(jlcxx::Module& mod)
+            {
+              TypeWrapper1(mod, StlWrappers::instance().vector)
+                .apply&lt;std::vector&lt;T&gt;&gt;(WrapVector());
+              TypeWrapper1(mod, StlWrappers::instance().valarray)
+                .apply&lt;std::valarray&lt;T&gt;&gt;(WrapValArray());
+            }
+          </code></pre>
+        </section>
+        <section>
+          <p><small>Julia side: implement interfaces</small></p>
+          <pre><code class="julia" data-trim data-line-numbers="1|2|3|4-6">
+            Base.IndexStyle(::Type{<:StdVector}) = IndexLinear()
+            Base.size(v::StdVector) = (Int(cppsize(v)),)
+            Base.getindex(v::StdVector, i::Int) = cxxgetindex(v,i)[]
+            function Base.setindex!(v::StdVector{T}, val, i::Int) where {T}
+              cxxsetindex!(v, convert(T,val), i)
+            end
+          </code></pre>
+        </section>
+        <section>
+          <p>Adding new STL container types</p>
+          <ul>
+            <li>Some complexity is unavoidable</li>
+            <li class="fragment">See commit <a href="https://github.com/JuliaInterop/libcxxwrap-julia/commit/47a760fab8a03551fb06c785a0d98280e89a151f">47a760f</a> for a diff to add <code>std::valarray</code></li>
+          </ul>
+        </section>
+      </section>
+      <section>
+        <h2>Wrap-up</h2>
+        <ul>
+          <li>API mostly stable</li>
+          <li>Good BinaryBuilder integration</li>
+          <li>Need to add more STL types</li>
+          <li>Better support for native compilers?</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+
+  <script src="dist/reveal.js"></script>
+  <script src="plugin/notes/notes.js"></script>
+  <script src="plugin/markdown/markdown.js"></script>
+  <script src="plugin/highlight/highlight.js"></script>
+  <script>
+    // More info about initialization & config:
+    // - https://revealjs.com/initialization/
+    // - https://revealjs.com/config/
+    Reveal.initialize({
+      hash: true,
+
+      // Learn about plugins: https://revealjs.com/plugins/
+      plugins: [RevealMarkdown, RevealHighlight, RevealNotes]
+    });
+  </script>
+</body>
+
+</html>
